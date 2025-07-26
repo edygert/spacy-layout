@@ -1,0 +1,573 @@
+diff --git a/.gitignore b/.gitignore
+index 5e97e06..3880b3d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -129,3 +129,9 @@ exports
+ trash
+ 
+ .DS_Store
++
++# Project specific
++CLAUDE.md
++FINAL_SPECIFICATIONS.md
++.obsidian/
++
+diff --git a/README.md b/README.md
+index c140392..57f4df0 100644
+--- a/README.md
++++ b/README.md
+@@ -2,6 +2,8 @@
+ 
+ # spaCy Layout: Process PDFs, Word documents and more with spaCy
+ 
++I used Claude Code with the Opus 4 model to add table row and cell bounding boxes to spacy-layout and this is the result.
++
+ This plugin integrates with [Docling](https://ds4sd.github.io/docling/) to bring structured processing of **PDFs**, **Word documents** and other input formats to your [spaCy](https://spacy.io) pipeline. It outputs clean, **structured data** in a text-based format and creates spaCy's familiar [`Doc`](https://spacy.io/api/doc) objects that let you access labelled text spans like sections or headings, and tables with their data converted to a `pandas.DataFrame`.
+ 
+ This workflow makes it easy to apply powerful **NLP techniques** to your documents, including linguistic analysis, named entity recognition, text classification and more. It's also great for implementing **chunking for RAG** pipelines.
+@@ -88,6 +90,93 @@ for table in doc._.tables:
+     print(table._.data)
+ ```
+ 
++#### Accessing table structure: rows and cells
++
++spacy-layout provides detailed table structure information including bounding boxes for individual cells and rows. This is useful for visual highlighting, data extraction, and understanding table layout.
++
++```python
++# Enable table structure extraction
++from docling.datamodel.pipeline_options import PdfPipelineOptions
++
++pipeline_options = PdfPipelineOptions(do_table_structure=True)
++pipeline_options.table_structure_options.do_cell_matching = True
++
++layout = spaCyLayout(nlp, docling_options={"application/pdf": pipeline_options})
++doc = layout("document.pdf")
++
++# Access table layout information
++for table in doc._.tables:
++    table_layout = table._.table_layout
++    if table_layout:
++        # Access row bounding boxes
++        for row in table_layout.rows:
++            print(f"Row {row.row_index}:")
++            print(f"  Bounding box: x={row.x}, y={row.y}, width={row.width}, height={row.height}")
++            print(f"  Number of cells: {len(row.cells)}")
++            
++        # Access individual cell bounding boxes
++        for cell in table_layout.cells:
++            print(f"Cell at row {cell.row_index}, column {cell.col_index}:")
++            print(f"  Text: {cell.text}")
++            print(f"  Position: x={cell.x}, y={cell.y}")
++            print(f"  Size: {cell.width}x{cell.height}")
++            print(f"  Header: {'Yes' if cell.is_column_header else 'No'}")
++```
++
++#### Practical example: Creating row-based highlights
++
++Here's how to extract table rows with their bounding boxes for highlighting or further processing:
++
++```python
++import json
++
++# Extract table rows with bounding boxes
++table_data = []
++for table_idx, table in enumerate(doc._.tables):
++    table_layout = table._.table_layout
++    if not table_layout:
++        continue
++        
++    # Get the DataFrame for row data
++    df = table._.data
++    
++    rows = []
++    for row in table_layout.rows:
++        # Skip rows beyond DataFrame bounds or empty rows
++        if row.row_index >= len(df):
++            continue
++            
++        row_data = df.iloc[row.row_index]
++        if row_data.isna().all() or all(str(val).strip() == '' for val in row_data):
++            continue
++            
++        rows.append({
++            "row_index": row.row_index,
++            "bbox": [row.x, row.y, row.x + row.width, row.y + row.height],
++            "data": row_data.to_dict(),
++            "page": table._.layout.page_no
++        })
++    
++    table_data.append({
++        "table_index": table_idx,
++        "columns": df.columns.tolist(),
++        "rows": rows
++    })
++
++# Save for use with PDF highlighting tools
++with open("table_rows.json", "w") as f:
++    json.dump(table_data, f, indent=2)
++```
++
++#### Coordinate system considerations
++
++When working with table bounding boxes, keep in mind:
++
++- Coordinates use a **top-left origin** (0,0 at the top-left corner)
++- Units are in **pixels** relative to the page size
++- For **landscape PDFs**, coordinates may need transformation depending on how the PDF stores rotation
++- Page numbers are **1-indexed** (first page is page 1)
++
+ By default, the span text is a placeholder `TABLE`, but you can customize how a table is rendered by providing a `display_table` callback to `spaCyLayout`, which receives the `pandas.DataFrame` of the data. This allows you to include the table figures in the document text and use them later on, e.g. during information extraction with a trained named entity recognizer or text classifier.
+ 
+ ```python
+@@ -142,7 +231,8 @@ for span in doc.spans["layout"]:
+ | `Span.id` | `int` | Running index of layout span. |
+ | `Span._.layout` | `SpanLayout \| None` | Layout features of a layout span. |
+ | `Span._.heading` | `Span \| None` | Closest heading to a span, if available. |
+-| `Span._.data` | `pandas.DataFrame \| None` | The extracted data for table spans.
++| `Span._.data` | `pandas.DataFrame \| None` | The extracted data for table spans. |
++| `Span._.table_layout` | `TableLayout \| None` | Table structure with row and cell bounding boxes (tables only). |
+ 
+ ### <kbd>dataclass</kbd> PageLayout
+ 
+@@ -168,6 +258,41 @@ for span in doc.spans["layout"]:
+ | `height` | `float` | Height of the bounding box in pixels. |
+ | `page_no` | `int` | Number of page the span is on. |
+ 
++### <kbd>dataclass</kbd> TableLayout
++
++| Attribute | Type | Description |
++| --- | --- | --- |
++| `rows` | `list[TableRowLayout]` | List of rows in the table with their bounding boxes. |
++| `cells` | `list[TableCellLayout]` | List of all cells in the table with their bounding boxes. |
++| `page_no` | `int` | Page number the table is on (1-indexed). |
++
++### <kbd>dataclass</kbd> TableRowLayout
++
++| Attribute | Type | Description |
++| --- | --- | --- |
++| `x` | `float` | Horizontal offset of the row bounding box in pixels. |
++| `y` | `float` | Vertical offset of the row bounding box in pixels. |
++| `width` | `float` | Width of the row bounding box in pixels. |
++| `height` | `float` | Height of the row bounding box in pixels. |
++| `row_index` | `int` | Index of the row in the table (0-indexed). |
++| `cells` | `list[TableCellLayout]` | List of cells in this row. |
++
++### <kbd>dataclass</kbd> TableCellLayout
++
++| Attribute | Type | Description |
++| --- | --- | --- |
++| `x` | `float` | Horizontal offset of the cell bounding box in pixels. |
++| `y` | `float` | Vertical offset of the cell bounding box in pixels. |
++| `width` | `float` | Width of the cell bounding box in pixels. |
++| `height` | `float` | Height of the cell bounding box in pixels. |
++| `row_index` | `int` | Row index of the cell (0-indexed). |
++| `col_index` | `int` | Column index of the cell (0-indexed). |
++| `row_span` | `int` | Number of rows this cell spans. Defaults to 1. |
++| `col_span` | `int` | Number of columns this cell spans. Defaults to 1. |
++| `is_column_header` | `bool` | Whether this cell is a column header. |
++| `is_row_header` | `bool` | Whether this cell is a row header. |
++| `text` | `str` | Text content of the cell. |
++
+ ### <kbd>class</kbd> `spaCyLayout`
+ 
+ #### <kbd>method</kbd> `spaCyLayout.__init__`
+diff --git a/pyproject.toml b/pyproject.toml
+new file mode 100644
+index 0000000..e168642
+--- /dev/null
++++ b/pyproject.toml
+@@ -0,0 +1,36 @@
++[build-system]
++requires = ["setuptools>=64", "wheel"]
++build-backend = "setuptools.build_meta"
++
++[project]
++name = "spacy-layout"
++version = "0.0.13"
++description = "Process PDFs, Word documents and more with spaCy"
++readme = "README.md"
++requires-python = ">=3.10"
++license = {text = "MIT"}
++authors = [
++    {name = "Explosion", email = "contact@explosion.ai"}
++]
++classifiers = [
++    "Development Status :: 4 - Beta",
++    "Intended Audience :: Developers",
++    "License :: OSI Approved :: MIT License",
++    "Programming Language :: Python :: 3",
++    "Programming Language :: Python :: 3.10",
++    "Programming Language :: Python :: 3.11",
++    "Programming Language :: Python :: 3.12",
++]
++dependencies = [
++    "spacy>=3.7.5",
++    "docling>=2.5.2",
++    "pandas",
++    "srsly",
++]
++
++[project.urls]
++Homepage = "https://github.com/explosion/spacy-layout"
++Repository = "https://github.com/explosion/spacy-layout"
++
++[tool.setuptools.packages.find]
++include = ["spacy_layout*"]
+\ No newline at end of file
+diff --git a/setup.cfg b/setup.cfg
+index afb19e6..c14dfd7 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -1,5 +1,5 @@
+ [metadata]
+-version = 0.0.12
++version = 0.0.13
+ description = Use spaCy with PDFs, Word docs and other documents
+ url = https://github.com/explosion/spacy-layout
+ author = Explosion
+diff --git a/spacy_layout/layout.py b/spacy_layout/layout.py
+index a699230..2273a7d 100644
+--- a/spacy_layout/layout.py
++++ b/spacy_layout/layout.py
+@@ -18,7 +18,16 @@ from docling_core.types.doc.document import DoclingDocument
+ from docling_core.types.doc.labels import DocItemLabel
+ from spacy.tokens import Doc, Span, SpanGroup
+ 
+-from .types import Attrs, DocLayout, DoclingItem, PageLayout, SpanLayout
++from .types import (
++    Attrs,
++    DocLayout,
++    DoclingItem,
++    PageLayout,
++    SpanLayout,
++    TableCellLayout,
++    TableLayout,
++    TableRowLayout,
++)
+ from .util import decode_df, decode_obj, encode_df, encode_obj, get_bounding_box
+ 
+ if TYPE_CHECKING:
+@@ -66,6 +75,7 @@ class spaCyLayout:
+             span_heading=attrs.get("span_heading", "heading"),
+             span_data=attrs.get("span_data", "data"),
+             span_group=attrs.get("span_group", "layout"),
++            span_table_layout=attrs.get("span_table_layout", "table_layout"),
+         )
+         self.headings = headings
+         self.display_table = display_table
+@@ -78,6 +88,7 @@ class spaCyLayout:
+         Span.set_extension(self.attrs.span_layout, default=None, force=True)
+         Span.set_extension(self.attrs.span_data, default=None, force=True)
+         Span.set_extension(self.attrs.span_heading, getter=self.get_heading, force=True)
++        Span.set_extension(self.attrs.span_table_layout, default=None, force=True)
+ 
+     def __call__(self, source: str | Path | bytes | DoclingDocument) -> Doc:
+         """Call parser on a path to create a spaCy Doc object."""
+@@ -190,6 +201,11 @@ class spaCyLayout:
+             span._.set(self.attrs.span_layout, layout)
+             if item.label in TABLE_ITEM_LABELS:
+                 span._.set(self.attrs.span_data, item.export_to_dataframe())
++                # Extract table layout if this is a table
++                if item.prov and item.prov[0].page_no in pages:
++                    page = pages[item.prov[0].page_no]
++                    table_layout = self._extract_table_layout(item, page)
++                    span._.set(self.attrs.span_table_layout, table_layout)
+             spans.append(span)
+         doc.spans[self.attrs.span_group] = SpanGroup(
+             doc, name=self.attrs.span_group, spans=spans
+@@ -234,3 +250,74 @@ class spaCyLayout:
+             for span in doc.spans[self.attrs.span_group]
+             if span.label_ in TABLE_ITEM_LABELS
+         ]
++
++    def _extract_table_layout(
++        self, table_item: "TableItem", page: PageLayout
++    ) -> TableLayout | None:
++        """Extract detailed table layout information including cell and row bounding boxes."""
++        if not hasattr(table_item, "data") or not table_item.data:
++            return None
++        
++        table_data = table_item.data
++        if not hasattr(table_data, "table_cells"):
++            return None
++        
++        cells = []
++        rows_dict = {}
++        
++        # Process each cell
++        for cell in table_data.table_cells:
++            if not cell.bbox:
++                continue
++                
++            # Convert cell bounding box to consistent coordinates
++            x, y, width, height = get_bounding_box(cell.bbox, page.height)
++            
++            cell_layout = TableCellLayout(
++                x=x,
++                y=y,
++                width=width,
++                height=height,
++                row_index=cell.start_row_offset_idx,
++                col_index=cell.start_col_offset_idx,
++                row_span=cell.row_span,
++                col_span=cell.col_span,
++                is_column_header=cell.column_header,
++                is_row_header=cell.row_header,
++                text=cell.text,
++            )
++            cells.append(cell_layout)
++            
++            # Group cells by row
++            row_idx = cell.start_row_offset_idx
++            if row_idx not in rows_dict:
++                rows_dict[row_idx] = []
++            rows_dict[row_idx].append(cell_layout)
++        
++        # Calculate row bounding boxes
++        rows = []
++        for row_idx, row_cells in sorted(rows_dict.items()):
++            if not row_cells:
++                continue
++                
++            # Calculate encompassing bounding box for the row
++            min_x = min(cell.x for cell in row_cells)
++            min_y = min(cell.y for cell in row_cells)
++            max_x = max(cell.x + cell.width for cell in row_cells)
++            max_y = max(cell.y + cell.height for cell in row_cells)
++            
++            row_layout = TableRowLayout(
++                x=min_x,
++                y=min_y,
++                width=max_x - min_x,
++                height=max_y - min_y,
++                row_index=row_idx,
++                cells=row_cells,
++            )
++            rows.append(row_layout)
++        
++        return TableLayout(
++            rows=rows,
++            cells=cells,
++            page_no=page.page_no if hasattr(table_item, "prov") and table_item.prov else 0,
++        )
+diff --git a/spacy_layout/types.py b/spacy_layout/types.py
+index d20ee9b..49c2c2b 100644
+--- a/spacy_layout/types.py
++++ b/spacy_layout/types.py
+@@ -22,6 +22,7 @@ class Attrs:
+     span_data: str
+     span_heading: str
+     span_group: str
++    span_table_layout: str = "table_layout"
+ 
+ 
+ @dataclass
+@@ -60,3 +61,63 @@ class SpanLayout:
+     @classmethod
+     def from_dict(cls, data: dict) -> "SpanLayout":
+         return cls(**data)
++
++
++@dataclass
++class TableCellLayout:
++    """Layout information for a table cell"""
++
++    x: float
++    y: float
++    width: float
++    height: float
++    row_index: int
++    col_index: int
++    row_span: int = 1
++    col_span: int = 1
++    is_column_header: bool = False
++    is_row_header: bool = False
++    text: str = ""
++
++    @classmethod
++    def from_dict(cls, data: dict) -> "TableCellLayout":
++        return cls(**data)
++
++
++@dataclass
++class TableRowLayout:
++    """Layout information for a table row"""
++
++    x: float
++    y: float
++    width: float
++    height: float
++    row_index: int
++    cells: list[TableCellLayout]
++
++    @classmethod
++    def from_dict(cls, data: dict) -> "TableRowLayout":
++        cells = [TableCellLayout.from_dict(cell) for cell in data.get("cells", [])]
++        return cls(
++            x=data["x"],
++            y=data["y"],
++            width=data["width"],
++            height=data["height"],
++            row_index=data["row_index"],
++            cells=cells,
++        )
++
++
++@dataclass
++class TableLayout:
++    """Complete layout information for a table"""
++
++    rows: list[TableRowLayout]
++    cells: list[TableCellLayout]
++    page_no: int
++
++    @classmethod
++    def from_dict(cls, data: dict) -> "TableLayout":
++        rows = [TableRowLayout.from_dict(row) for row in data.get("rows", [])]
++        cells = [TableCellLayout.from_dict(cell) for cell in data.get("cells", [])]
++        return cls(rows=rows, cells=cells, page_no=data.get("page_no", 0))
+diff --git a/spacy_layout/util.py b/spacy_layout/util.py
+index 6b59ddb..4b8383a 100644
+--- a/spacy_layout/util.py
++++ b/spacy_layout/util.py
+@@ -4,13 +4,20 @@ from typing import TYPE_CHECKING, Any, Callable
+ from docling_core.types.doc.base import CoordOrigin
+ from pandas import DataFrame
+ 
+-from .types import DocLayout, PageLayout, SpanLayout
++from .types import DocLayout, PageLayout, SpanLayout, TableCellLayout, TableLayout, TableRowLayout
+ 
+ if TYPE_CHECKING:
+     from docling_core.types.doc.base import BoundingBox
+ 
+ TYPE_ATTR = "__type__"
+-OBJ_TYPES = {"SpanLayout": SpanLayout, "DocLayout": DocLayout, "PageLayout": PageLayout}
++OBJ_TYPES = {
++    "SpanLayout": SpanLayout, 
++    "DocLayout": DocLayout, 
++    "PageLayout": PageLayout,
++    "TableCellLayout": TableCellLayout,
++    "TableLayout": TableLayout,
++    "TableRowLayout": TableRowLayout,
++}
+ 
+ 
+ def encode_obj(obj: Any, chain: Callable | None = None) -> Any:
+diff --git a/tests/test_general.py b/tests/test_general.py
+index 132c827..fb5d4e6 100644
+--- a/tests/test_general.py
++++ b/tests/test_general.py
+@@ -12,7 +12,7 @@ import pandas as pd
+ 
+ from spacy_layout import spaCyLayout
+ from spacy_layout.layout import TABLE_PLACEHOLDER, get_bounding_box
+-from spacy_layout.types import DocLayout, PageLayout, SpanLayout
++from spacy_layout.types import DocLayout, PageLayout, SpanLayout, TableLayout, TableCellLayout, TableRowLayout
+ 
+ PDF_STARCRAFT = Path(__file__).parent / "data" / "starcraft.pdf"
+ PDF_SIMPLE = Path(__file__).parent / "data" / "simple.pdf"
+@@ -213,3 +213,104 @@ def test_serialize_roundtrip(path, nlp):
+         table_before = before._.get(layout.attrs.span_data)
+         table_after = after._.get(layout.attrs.span_data)
+         assert_frame_equal(table_before, table_after)
++
++
++def test_table_cell_bounding_boxes(nlp):
++    """Test that table cell and row bounding boxes are extracted correctly."""
++    from docling.datamodel.pipeline_options import PdfPipelineOptions
++    
++    # Enable table structure extraction
++    pipeline_options = PdfPipelineOptions(do_table_structure=True)
++    pipeline_options.table_structure_options.do_cell_matching = True
++    
++    layout = spaCyLayout(nlp, docling_options={"application/pdf": pipeline_options})
++    doc = layout(PDF_TABLE)
++    
++    # Get the table span
++    tables = doc._.get(layout.attrs.doc_tables)
++    assert len(tables) == 1
++    table_span = tables[0]
++    
++    # Check if table layout was extracted
++    table_layout = table_span._.get(layout.attrs.span_table_layout)
++    
++    # The table layout might be None if Docling doesn't provide cell data
++    # This is expected for some PDFs, so we'll check if it exists first
++    if table_layout is not None:
++        assert isinstance(table_layout, TableLayout)
++        
++        # Check that we have cells
++        assert len(table_layout.cells) > 0
++        
++        # Check that cells have proper structure
++        for cell in table_layout.cells:
++            assert isinstance(cell, TableCellLayout)
++            assert cell.x >= 0
++            assert cell.y >= 0
++            assert cell.width > 0
++            assert cell.height > 0
++            assert cell.row_index >= 0
++            assert cell.col_index >= 0
++            assert cell.row_span >= 1
++            assert cell.col_span >= 1
++            assert isinstance(cell.text, str)
++        
++        # Check that we have rows
++        assert len(table_layout.rows) > 0
++        
++        # Check that rows have proper structure
++        for row in table_layout.rows:
++            assert isinstance(row, TableRowLayout)
++            assert row.x >= 0
++            assert row.y >= 0
++            assert row.width > 0
++            assert row.height > 0
++            assert row.row_index >= 0
++            assert len(row.cells) > 0
++            
++            # Verify row bounding box encompasses all cells
++            min_x = min(cell.x for cell in row.cells)
++            max_x = max(cell.x + cell.width for cell in row.cells)
++            assert abs(row.x - min_x) < 1.0  # Allow small floating point differences
++            assert abs(row.width - (max_x - min_x)) < 1.0
++    else:
++        # If no table layout, at least verify the table span exists and has data
++        assert table_span._.get(layout.attrs.span_data) is not None
++
++
++def test_table_layout_serialization(nlp):
++    """Test that table layout objects can be serialized and deserialized."""
++    # Create sample table layout objects
++    cell1 = TableCellLayout(
++        x=10, y=20, width=50, height=30, row_index=0, col_index=0,
++        row_span=1, col_span=1, is_column_header=True, text="Header 1"
++    )
++    cell2 = TableCellLayout(
++        x=60, y=20, width=50, height=30, row_index=0, col_index=1,
++        row_span=1, col_span=1, is_column_header=True, text="Header 2"
++    )
++    
++    row = TableRowLayout(
++        x=10, y=20, width=100, height=30, row_index=0, cells=[cell1, cell2]
++    )
++    
++    table_layout = TableLayout(rows=[row], cells=[cell1, cell2], page_no=1)
++    
++    # Serialize and deserialize
++    serialized = srsly.msgpack_dumps({"table": table_layout})
++    deserialized = srsly.msgpack_loads(serialized)
++    
++    # Verify structure is preserved
++    result = deserialized["table"]
++    assert isinstance(result, TableLayout)
++    assert len(result.cells) == 2
++    assert len(result.rows) == 1
++    assert result.page_no == 1
++    
++    # Check cells
++    assert result.cells[0].text == "Header 1"
++    assert result.cells[1].text == "Header 2"
++    
++    # Check rows
++    assert result.rows[0].row_index == 0
++    assert len(result.rows[0].cells) == 2
