@@ -2,6 +2,8 @@
 
 # spaCy Layout: Process PDFs, Word documents and more with spaCy
 
+I used Claude Code with the Opus 4 model to add table row and cell bounding boxes to spacy-layout and this is the result.
+
 This plugin integrates with [Docling](https://ds4sd.github.io/docling/) to bring structured processing of **PDFs**, **Word documents** and other input formats to your [spaCy](https://spacy.io) pipeline. It outputs clean, **structured data** in a text-based format and creates spaCy's familiar [`Doc`](https://spacy.io/api/doc) objects that let you access labelled text spans like sections or headings, and tables with their data converted to a `pandas.DataFrame`.
 
 This workflow makes it easy to apply powerful **NLP techniques** to your documents, including linguistic analysis, named entity recognition, text classification and more. It's also great for implementing **chunking for RAG** pipelines.
@@ -88,6 +90,93 @@ for table in doc._.tables:
     print(table._.data)
 ```
 
+#### Accessing table structure: rows and cells
+
+spacy-layout provides detailed table structure information including bounding boxes for individual cells and rows. This is useful for visual highlighting, data extraction, and understanding table layout.
+
+```python
+# Enable table structure extraction
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+
+pipeline_options = PdfPipelineOptions(do_table_structure=True)
+pipeline_options.table_structure_options.do_cell_matching = True
+
+layout = spaCyLayout(nlp, docling_options={"application/pdf": pipeline_options})
+doc = layout("document.pdf")
+
+# Access table layout information
+for table in doc._.tables:
+    table_layout = table._.table_layout
+    if table_layout:
+        # Access row bounding boxes
+        for row in table_layout.rows:
+            print(f"Row {row.row_index}:")
+            print(f"  Bounding box: x={row.x}, y={row.y}, width={row.width}, height={row.height}")
+            print(f"  Number of cells: {len(row.cells)}")
+            
+        # Access individual cell bounding boxes
+        for cell in table_layout.cells:
+            print(f"Cell at row {cell.row_index}, column {cell.col_index}:")
+            print(f"  Text: {cell.text}")
+            print(f"  Position: x={cell.x}, y={cell.y}")
+            print(f"  Size: {cell.width}x{cell.height}")
+            print(f"  Header: {'Yes' if cell.is_column_header else 'No'}")
+```
+
+#### Practical example: Creating row-based highlights
+
+Here's how to extract table rows with their bounding boxes for highlighting or further processing:
+
+```python
+import json
+
+# Extract table rows with bounding boxes
+table_data = []
+for table_idx, table in enumerate(doc._.tables):
+    table_layout = table._.table_layout
+    if not table_layout:
+        continue
+        
+    # Get the DataFrame for row data
+    df = table._.data
+    
+    rows = []
+    for row in table_layout.rows:
+        # Skip rows beyond DataFrame bounds or empty rows
+        if row.row_index >= len(df):
+            continue
+            
+        row_data = df.iloc[row.row_index]
+        if row_data.isna().all() or all(str(val).strip() == '' for val in row_data):
+            continue
+            
+        rows.append({
+            "row_index": row.row_index,
+            "bbox": [row.x, row.y, row.x + row.width, row.y + row.height],
+            "data": row_data.to_dict(),
+            "page": table._.layout.page_no
+        })
+    
+    table_data.append({
+        "table_index": table_idx,
+        "columns": df.columns.tolist(),
+        "rows": rows
+    })
+
+# Save for use with PDF highlighting tools
+with open("table_rows.json", "w") as f:
+    json.dump(table_data, f, indent=2)
+```
+
+#### Coordinate system considerations
+
+When working with table bounding boxes, keep in mind:
+
+- Coordinates use a **top-left origin** (0,0 at the top-left corner)
+- Units are in **pixels** relative to the page size
+- For **landscape PDFs**, coordinates may need transformation depending on how the PDF stores rotation
+- Page numbers are **1-indexed** (first page is page 1)
+
 By default, the span text is a placeholder `TABLE`, but you can customize how a table is rendered by providing a `display_table` callback to `spaCyLayout`, which receives the `pandas.DataFrame` of the data. This allows you to include the table figures in the document text and use them later on, e.g. during information extraction with a trained named entity recognizer or text classifier.
 
 ```python
@@ -142,7 +231,8 @@ for span in doc.spans["layout"]:
 | `Span.id` | `int` | Running index of layout span. |
 | `Span._.layout` | `SpanLayout \| None` | Layout features of a layout span. |
 | `Span._.heading` | `Span \| None` | Closest heading to a span, if available. |
-| `Span._.data` | `pandas.DataFrame \| None` | The extracted data for table spans.
+| `Span._.data` | `pandas.DataFrame \| None` | The extracted data for table spans. |
+| `Span._.table_layout` | `TableLayout \| None` | Table structure with row and cell bounding boxes (tables only). |
 
 ### <kbd>dataclass</kbd> PageLayout
 
@@ -167,6 +257,41 @@ for span in doc.spans["layout"]:
 | `width` | `float` | Width of the bounding box in pixels. |
 | `height` | `float` | Height of the bounding box in pixels. |
 | `page_no` | `int` | Number of page the span is on. |
+
+### <kbd>dataclass</kbd> TableLayout
+
+| Attribute | Type | Description |
+| --- | --- | --- |
+| `rows` | `list[TableRowLayout]` | List of rows in the table with their bounding boxes. |
+| `cells` | `list[TableCellLayout]` | List of all cells in the table with their bounding boxes. |
+| `page_no` | `int` | Page number the table is on (1-indexed). |
+
+### <kbd>dataclass</kbd> TableRowLayout
+
+| Attribute | Type | Description |
+| --- | --- | --- |
+| `x` | `float` | Horizontal offset of the row bounding box in pixels. |
+| `y` | `float` | Vertical offset of the row bounding box in pixels. |
+| `width` | `float` | Width of the row bounding box in pixels. |
+| `height` | `float` | Height of the row bounding box in pixels. |
+| `row_index` | `int` | Index of the row in the table (0-indexed). |
+| `cells` | `list[TableCellLayout]` | List of cells in this row. |
+
+### <kbd>dataclass</kbd> TableCellLayout
+
+| Attribute | Type | Description |
+| --- | --- | --- |
+| `x` | `float` | Horizontal offset of the cell bounding box in pixels. |
+| `y` | `float` | Vertical offset of the cell bounding box in pixels. |
+| `width` | `float` | Width of the cell bounding box in pixels. |
+| `height` | `float` | Height of the cell bounding box in pixels. |
+| `row_index` | `int` | Row index of the cell (0-indexed). |
+| `col_index` | `int` | Column index of the cell (0-indexed). |
+| `row_span` | `int` | Number of rows this cell spans. Defaults to 1. |
+| `col_span` | `int` | Number of columns this cell spans. Defaults to 1. |
+| `is_column_header` | `bool` | Whether this cell is a column header. |
+| `is_row_header` | `bool` | Whether this cell is a row header. |
+| `text` | `str` | Text content of the cell. |
 
 ### <kbd>class</kbd> `spaCyLayout`
 

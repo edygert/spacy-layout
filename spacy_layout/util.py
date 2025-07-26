@@ -4,13 +4,20 @@ from typing import TYPE_CHECKING, Any, Callable
 from docling_core.types.doc.base import CoordOrigin
 from pandas import DataFrame
 
-from .types import DocLayout, PageLayout, SpanLayout
+from .types import DocLayout, PageLayout, SpanLayout, TableCellLayout, TableLayout, TableRowLayout
 
 if TYPE_CHECKING:
     from docling_core.types.doc.base import BoundingBox
 
 TYPE_ATTR = "__type__"
-OBJ_TYPES = {"SpanLayout": SpanLayout, "DocLayout": DocLayout, "PageLayout": PageLayout}
+OBJ_TYPES = {
+    "SpanLayout": SpanLayout, 
+    "DocLayout": DocLayout, 
+    "PageLayout": PageLayout,
+    "TableCellLayout": TableCellLayout,
+    "TableLayout": TableLayout,
+    "TableRowLayout": TableRowLayout,
+}
 
 
 def encode_obj(obj: Any, chain: Callable | None = None) -> Any:

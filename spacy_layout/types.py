@@ -22,6 +22,7 @@ class Attrs:
     span_data: str
     span_heading: str
     span_group: str
+    span_table_layout: str = "table_layout"
 
 
 @dataclass
@@ -60,3 +61,63 @@ class SpanLayout:
     @classmethod
     def from_dict(cls, data: dict) -> "SpanLayout":
         return cls(**data)
+
+
+@dataclass
+class TableCellLayout:
+    """Layout information for a table cell"""
+
+    x: float
+    y: float
+    width: float
+    height: float
+    row_index: int
+    col_index: int
+    row_span: int = 1
+    col_span: int = 1
+    is_column_header: bool = False
+    is_row_header: bool = False
+    text: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TableCellLayout":
+        return cls(**data)
+
+
+@dataclass
+class TableRowLayout:
+    """Layout information for a table row"""
+
+    x: float
+    y: float
+    width: float
+    height: float
+    row_index: int
+    cells: list[TableCellLayout]
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TableRowLayout":
+        cells = [TableCellLayout.from_dict(cell) for cell in data.get("cells", [])]
+        return cls(
+            x=data["x"],
+            y=data["y"],
+            width=data["width"],
+            height=data["height"],
+            row_index=data["row_index"],
+            cells=cells,
+        )
+
+
+@dataclass
+class TableLayout:
+    """Complete layout information for a table"""
+
+    rows: list[TableRowLayout]
+    cells: list[TableCellLayout]
+    page_no: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TableLayout":
+        rows = [TableRowLayout.from_dict(row) for row in data.get("rows", [])]
+        cells = [TableCellLayout.from_dict(cell) for cell in data.get("cells", [])]
+        return cls(rows=rows, cells=cells, page_no=data.get("page_no", 0))

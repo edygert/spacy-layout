@@ -18,7 +18,16 @@ from docling_core.types.doc.document import DoclingDocument
 from docling_core.types.doc.labels import DocItemLabel
 from spacy.tokens import Doc, Span, SpanGroup
 
-from .types import Attrs, DocLayout, DoclingItem, PageLayout, SpanLayout
+from .types import (
+    Attrs,
+    DocLayout,
+    DoclingItem,
+    PageLayout,
+    SpanLayout,
+    TableCellLayout,
+    TableLayout,
+    TableRowLayout,
+)
 from .util import decode_df, decode_obj, encode_df, encode_obj, get_bounding_box
 
 if TYPE_CHECKING:
@@ -66,6 +75,7 @@ class spaCyLayout:
             span_heading=attrs.get("span_heading", "heading"),
             span_data=attrs.get("span_data", "data"),
             span_group=attrs.get("span_group", "layout"),
+            span_table_layout=attrs.get("span_table_layout", "table_layout"),
         )
         self.headings = headings
         self.display_table = display_table
@@ -78,6 +88,7 @@ class spaCyLayout:
         Span.set_extension(self.attrs.span_layout, default=None, force=True)
         Span.set_extension(self.attrs.span_data, default=None, force=True)
         Span.set_extension(self.attrs.span_heading, getter=self.get_heading, force=True)
+        Span.set_extension(self.attrs.span_table_layout, default=None, force=True)
 
     def __call__(self, source: str | Path | bytes | DoclingDocument) -> Doc:
         """Call parser on a path to create a spaCy Doc object."""
@@ -190,6 +201,11 @@ class spaCyLayout:
             span._.set(self.attrs.span_layout, layout)
             if item.label in TABLE_ITEM_LABELS:
                 span._.set(self.attrs.span_data, item.export_to_dataframe())
+                # Extract table layout if this is a table
+                if item.prov and item.prov[0].page_no in pages:
+                    page = pages[item.prov[0].page_no]
+                    table_layout = self._extract_table_layout(item, page)
+                    span._.set(self.attrs.span_table_layout, table_layout)
             spans.append(span)
         doc.spans[self.attrs.span_group] = SpanGroup(
             doc, name=self.attrs.span_group, spans=spans
@@ -234,3 +250,74 @@ class spaCyLayout:
             for span in doc.spans[self.attrs.span_group]
             if span.label_ in TABLE_ITEM_LABELS
         ]
+
+    def _extract_table_layout(
+        self, table_item: "TableItem", page: PageLayout
+    ) -> TableLayout | None:
+        """Extract detailed table layout information including cell and row bounding boxes."""
+        if not hasattr(table_item, "data") or not table_item.data:
+            return None
+        
+        table_data = table_item.data
+        if not hasattr(table_data, "table_cells"):
+            return None
+        
+        cells = []
+        rows_dict = {}
+        
+        # Process each cell
+        for cell in table_data.table_cells:
+            if not cell.bbox:
+                continue
+                
+            # Convert cell bounding box to consistent coordinates
+            x, y, width, height = get_bounding_box(cell.bbox, page.height)
+            
+            cell_layout = TableCellLayout(
+                x=x,
+                y=y,
+                width=width,
+                height=height,
+                row_index=cell.start_row_offset_idx,
+                col_index=cell.start_col_offset_idx,
+                row_span=cell.row_span,
+                col_span=cell.col_span,
+                is_column_header=cell.column_header,
+                is_row_header=cell.row_header,
+                text=cell.text,
+            )
+            cells.append(cell_layout)
+            
+            # Group cells by row
+            row_idx = cell.start_row_offset_idx
+            if row_idx not in rows_dict:
+                rows_dict[row_idx] = []
+            rows_dict[row_idx].append(cell_layout)
+        
+        # Calculate row bounding boxes
+        rows = []
+        for row_idx, row_cells in sorted(rows_dict.items()):
+            if not row_cells:
+                continue
+                
+            # Calculate encompassing bounding box for the row
+            min_x = min(cell.x for cell in row_cells)
+            min_y = min(cell.y for cell in row_cells)
+            max_x = max(cell.x + cell.width for cell in row_cells)
+            max_y = max(cell.y + cell.height for cell in row_cells)
+            
+            row_layout = TableRowLayout(
+                x=min_x,
+                y=min_y,
+                width=max_x - min_x,
+                height=max_y - min_y,
+                row_index=row_idx,
+                cells=row_cells,
+            )
+            rows.append(row_layout)
+        
+        return TableLayout(
+            rows=rows,
+            cells=cells,
+            page_no=page.page_no if hasattr(table_item, "prov") and table_item.prov else 0,
+        )

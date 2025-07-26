@@ -129,3 +129,9 @@ exports
 trash
 
 .DS_Store
+
+# Project specific
+CLAUDE.md
+FINAL_SPECIFICATIONS.md
+.obsidian/
+

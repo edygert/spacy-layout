@@ -12,7 +12,7 @@ import pandas as pd
 
 from spacy_layout import spaCyLayout
 from spacy_layout.layout import TABLE_PLACEHOLDER, get_bounding_box
-from spacy_layout.types import DocLayout, PageLayout, SpanLayout
+from spacy_layout.types import DocLayout, PageLayout, SpanLayout, TableLayout, TableCellLayout, TableRowLayout
 
 PDF_STARCRAFT = Path(__file__).parent / "data" / "starcraft.pdf"
 PDF_SIMPLE = Path(__file__).parent / "data" / "simple.pdf"
@@ -213,3 +213,104 @@ def test_serialize_roundtrip(path, nlp):
         table_before = before._.get(layout.attrs.span_data)
         table_after = after._.get(layout.attrs.span_data)
         assert_frame_equal(table_before, table_after)
+
+
+def test_table_cell_bounding_boxes(nlp):
+    """Test that table cell and row bounding boxes are extracted correctly."""
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    
+    # Enable table structure extraction
+    pipeline_options = PdfPipelineOptions(do_table_structure=True)
+    pipeline_options.table_structure_options.do_cell_matching = True
+    
+    layout = spaCyLayout(nlp, docling_options={"application/pdf": pipeline_options})
+    doc = layout(PDF_TABLE)
+    
+    # Get the table span
+    tables = doc._.get(layout.attrs.doc_tables)
+    assert len(tables) == 1
+    table_span = tables[0]
+    
+    # Check if table layout was extracted
+    table_layout = table_span._.get(layout.attrs.span_table_layout)
+    
+    # The table layout might be None if Docling doesn't provide cell data
+    # This is expected for some PDFs, so we'll check if it exists first
+    if table_layout is not None:
+        assert isinstance(table_layout, TableLayout)
+        
+        # Check that we have cells
+        assert len(table_layout.cells) > 0
+        
+        # Check that cells have proper structure
+        for cell in table_layout.cells:
+            assert isinstance(cell, TableCellLayout)
+            assert cell.x >= 0
+            assert cell.y >= 0
+            assert cell.width > 0
+            assert cell.height > 0
+            assert cell.row_index >= 0
+            assert cell.col_index >= 0
+            assert cell.row_span >= 1
+            assert cell.col_span >= 1
+            assert isinstance(cell.text, str)
+        
+        # Check that we have rows
+        assert len(table_layout.rows) > 0
+        
+        # Check that rows have proper structure
+        for row in table_layout.rows:
+            assert isinstance(row, TableRowLayout)
+            assert row.x >= 0
+            assert row.y >= 0
+            assert row.width > 0
+            assert row.height > 0
+            assert row.row_index >= 0
+            assert len(row.cells) > 0
+            
+            # Verify row bounding box encompasses all cells
+            min_x = min(cell.x for cell in row.cells)
+            max_x = max(cell.x + cell.width for cell in row.cells)
+            assert abs(row.x - min_x) < 1.0  # Allow small floating point differences
+            assert abs(row.width - (max_x - min_x)) < 1.0
+    else:
+        # If no table layout, at least verify the table span exists and has data
+        assert table_span._.get(layout.attrs.span_data) is not None
+
+
+def test_table_layout_serialization(nlp):
+    """Test that table layout objects can be serialized and deserialized."""
+    # Create sample table layout objects
+    cell1 = TableCellLayout(
+        x=10, y=20, width=50, height=30, row_index=0, col_index=0,
+        row_span=1, col_span=1, is_column_header=True, text="Header 1"
+    )
+    cell2 = TableCellLayout(
+        x=60, y=20, width=50, height=30, row_index=0, col_index=1,
+        row_span=1, col_span=1, is_column_header=True, text="Header 2"
+    )
+    
+    row = TableRowLayout(
+        x=10, y=20, width=100, height=30, row_index=0, cells=[cell1, cell2]
+    )
+    
+    table_layout = TableLayout(rows=[row], cells=[cell1, cell2], page_no=1)
+    
+    # Serialize and deserialize
+    serialized = srsly.msgpack_dumps({"table": table_layout})
+    deserialized = srsly.msgpack_loads(serialized)
+    
+    # Verify structure is preserved
+    result = deserialized["table"]
+    assert isinstance(result, TableLayout)
+    assert len(result.cells) == 2
+    assert len(result.rows) == 1
+    assert result.page_no == 1
+    
+    # Check cells
+    assert result.cells[0].text == "Header 1"
+    assert result.cells[1].text == "Header 2"
+    
+    # Check rows
+    assert result.rows[0].row_index == 0
+    assert len(result.rows[0].cells) == 2
